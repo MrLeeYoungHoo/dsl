@@ -1,0 +1,84 @@
+name: LiveContainer IPA Build (Unsigned)
+
+on:
+  push:
+    # 只在 main 分支打 tag 时触发，或者你可以改为 push 到 main 分支
+    tags:
+      - 'v*.*.*' 
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  build_ios:
+    # LiveContainer 需要的 App 必须在 macOS 运行器上编译
+    runs-on: macos-latest
+    
+    steps:
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v4
+
+      # --------------------- Flutter 环境配置 ---------------------
+      - name: 🎯 Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable' 
+          
+      - name: 📦 Get Flutter dependencies and clean build
+        run: |
+          flutter clean
+          flutter pub get
+        
+      # --------------------- 编译未签名的 .app 文件 ---------------------
+      
+      - name: 🔨 Build iOS App (Unsigned)
+        # 使用 --no-codesign 标志跳过签名步骤
+        # 这将生成 build/ios/iphoneos/Runner.app 文件
+        run: flutter build ios --release --no-codesign
+        
+      # --------------------- 手动打包为 LiveContainer 适用的 .ipa ---------------------
+      
+      - name: ⚙️ Create Unsigned IPA Archive
+        run: |
+          # 1. 定义 .app 文件的路径
+          # LiveContainer 需要的是未签名的 Release 版本 .app 文件
+          APP_NAME="dart_simple_live"
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          IPA_OUTPUT_NAME="${APP_NAME}_unsigned_release.ipa"
+          
+          # 2. 检查 .app 文件是否生成
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: Runner.app not found at $APP_PATH. Build failed."
+            exit 1
+          fi
+          
+          # 3. 创建一个名为 Payload 的文件夹 (IPA 文件的标准结构)
+          mkdir -p Payload
+          
+          # 4. 将 .app 文件复制到 Payload 文件夹中
+          cp -R "$APP_PATH" Payload/
+          
+          # 5. 压缩 Payload 文件夹并命名为 .ipa 文件
+          zip -r "$IPA_OUTPUT_NAME" Payload/
+          
+          # 6. 清理 Payload 文件夹
+          rm -rf Payload
+          
+      # --------------------- 上传 Artifact ---------------------
+      
+      - name: ⬆️ Upload IPA as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: livecontainer_ipa
+          path: "*.ipa" # 匹配上一步生成的 .ipa 文件
+          retention-days: 7 
+
+      # --------------------- 创建 GitHub Release (可选) ---------------------
+      
+      - name: 📝 Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/') # 仅在 tag 触发时创建 Release
+        with:
+          files: "*.ipa"
+          name: LiveContainer App Release ${{ github.ref_name }}
+          # 标记为预发布版本，或根据需要设置
+          draft: false
+          prerelease: true
