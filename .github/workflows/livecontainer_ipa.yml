@@ -9,7 +9,7 @@ on:
 
 jobs:
   build_ios:
-    # LiveContainer 需要的 App 必须在 macOS 运行器上编译
+    # 必须使用 macOS 运行器
     runs-on: macos-latest
     
     steps:
@@ -23,6 +23,9 @@ jobs:
           channel: 'stable' 
           
       - name: 📦 Get Flutter dependencies and clean build
+        # ------------------- 核心修改: 设置工作目录 -------------------
+        working-directory: ./simple_live_app 
+        # -----------------------------------------------------------
         run: |
           flutter clean
           flutter pub get
@@ -30,18 +33,20 @@ jobs:
       # --------------------- 编译未签名的 .app 文件 ---------------------
       
       - name: 🔨 Build iOS App (Unsigned)
-        # 使用 --no-codesign 标志跳过签名步骤
-        # 这将生成 build/ios/iphoneos/Runner.app 文件
+        # --no-codesign 标志跳过签名
+        # ------------------- 核心修改: 设置工作目录 -------------------
+        working-directory: ./simple_live_app 
+        # -----------------------------------------------------------
         run: flutter build ios --release --no-codesign
         
       # --------------------- 手动打包为 LiveContainer 适用的 .ipa ---------------------
       
       - name: ⚙️ Create Unsigned IPA Archive
+        # 此步骤在项目根目录运行，以便于生成 .ipa 文件
         run: |
-          # 1. 定义 .app 文件的路径
-          # LiveContainer 需要的是未签名的 Release 版本 .app 文件
+          # 1. 定义 .app 文件的路径，注意路径前缀加上了 'simple_live_app/'
           APP_NAME="dart_simple_live"
-          APP_PATH="build/ios/iphoneos/Runner.app"
+          APP_PATH="simple_live_app/build/ios/iphoneos/Runner.app"
           IPA_OUTPUT_NAME="${APP_NAME}_unsigned_release.ipa"
           
           # 2. 检查 .app 文件是否生成
@@ -54,9 +59,11 @@ jobs:
           mkdir -p Payload
           
           # 4. 将 .app 文件复制到 Payload 文件夹中
+          echo "Copying $APP_PATH to Payload/"
           cp -R "$APP_PATH" Payload/
           
           # 5. 压缩 Payload 文件夹并命名为 .ipa 文件
+          echo "Creating $IPA_OUTPUT_NAME"
           zip -r "$IPA_OUTPUT_NAME" Payload/
           
           # 6. 清理 Payload 文件夹
@@ -79,6 +86,5 @@ jobs:
         with:
           files: "*.ipa"
           name: LiveContainer App Release ${{ github.ref_name }}
-          # 标记为预发布版本，或根据需要设置
           draft: false
           prerelease: true
