@@ -1,214 +1,90 @@
-name: app-build-action-dev
+name: LiveContainer IPA Build (Unsigned)
 
 on:
-  workflow_dispatch:
   push:
+    # 只在 main 分支打 tag 时触发，或者你可以改为 push 到 main 分支
     tags:
-      - "dev_v*"
+      - 'v*.*.*' 
+  workflow_dispatch: # 允许手动触发
 
 jobs:
-  # 打包Android、iOS、Mac
-  build-mac-ios-android:
+  build_ios:
+    # 必须使用 macOS 运行器
     runs-on: macos-latest
-
-    permissions:
-      contents: write
-
+    
     steps:
-      # 签出代码
-      - uses: actions/checkout@v4
-        with:
-          ref: dev
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v4
 
-      # APK签名设置
-      - name: Download Android keystore
-        id: android_keystore
-        uses: timheuer/base64-to-file@v1.2
-        with:
-          fileName: keystore.jks
-          encodedString: ${{ secrets.KEYSTORE_BASE64 }}
-      - name: Create key.properties
-        run: |
-          echo "storeFile=${{ steps.android_keystore.outputs.filePath }}" > simple_live_app/android/key.properties
-          echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> simple_live_app/android/key.properties
-
-      # 设置JAVA环境
-      - uses: actions/setup-java@v4
-        with:
-          distribution: "zulu"
-          java-version: "17"
-          cache: "gradle"
-
-      # 设置Flutter
-      - name: Flutter action
+      # --------------------- Flutter 环境配置 ---------------------
+      - name: 🎯 Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.38.x"
-          cache: true
-
-      # 打开MAC Desktop支持
-      - name: Enable Flutter Desktop
-        run: flutter config --enable-macos-desktop
-
-      # 更新Flutter的packages
-      - name: Restore packages
+          channel: 'stable' 
+          
+      - name: 📦 Get Flutter dependencies and clean build
+        # ------------------- 核心修改: 设置工作目录 -------------------
+        working-directory: ./simple_live_app 
+        # -----------------------------------------------------------
         run: |
-          cd simple_live_app
+          flutter clean
           flutter pub get
-
-      # 安装appdmg npm install -g appdmg
-      - name: Install appdmg
-        run: npm install -g appdmg
-
-      # 设置flutter_distributor环境
-      - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
-
-      # 打包APK
-      - name: Build APK
+        
+      # --------------------- 编译未签名的 .app 文件 ---------------------
+      
+      - name: 🔨 Build iOS App (Unsigned)
+        # --no-codesign 标志跳过签名
+        # ------------------- 核心修改: 设置工作目录 -------------------
+        working-directory: ./simple_live_app 
+        # -----------------------------------------------------------
+        run: flutter build ios --release --no-codesign
+        
+      # --------------------- 手动打包为 LiveContainer 适用的 .ipa ---------------------
+      
+      - name: ⚙️ Create Unsigned IPA Archive
+        # 此步骤在项目根目录运行，以便于生成 .ipa 文件
         run: |
-          cd simple_live_app
-          flutter build apk --release --split-per-abi
-
-      #上传Artifacts
-      - name: Upload APK to Artifacts
+          # 1. 定义 .app 文件的路径，注意路径前缀加上了 'simple_live_app/'
+          APP_NAME="dart_simple_live"
+          APP_PATH="simple_live_app/build/ios/iphoneos/Runner.app"
+          IPA_OUTPUT_NAME="${APP_NAME}_unsigned_release.ipa"
+          
+          # 2. 检查 .app 文件是否生成
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: Runner.app not found at $APP_PATH. Build failed."
+            exit 1
+          fi
+          
+          # 3. 创建一个名为 Payload 的文件夹 (IPA 文件的标准结构)
+          mkdir -p Payload
+          
+          # 4. 将 .app 文件复制到 Payload 文件夹中
+          echo "Copying $APP_PATH to Payload/"
+          cp -R "$APP_PATH" Payload/
+          
+          # 5. 压缩 Payload 文件夹并命名为 .ipa 文件
+          echo "Creating $IPA_OUTPUT_NAME"
+          zip -r "$IPA_OUTPUT_NAME" Payload/
+          
+          # 6. 清理 Payload 文件夹
+          rm -rf Payload
+          
+      # --------------------- 上传 Artifact ---------------------
+      
+      - name: ⬆️ Upload IPA as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android
-          path: |
-            simple_live_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-            simple_live_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-            simple_live_app/build/app/outputs/flutter-apk/app-x86_64-release.apk
+          name: livecontainer_ipa
+          path: "*.ipa" # 匹配上一步生成的 .ipa 文件
+          retention-days: 7 
 
-      #打包iOS
-      - name: Build IPA
-        run: |
-          cd simple_live_app
-          flutter build ios --release --no-codesign
-
-      #创建未签名ipa
-      - name: Create IPA
-        run: |
-          cd simple_live_app
-          mkdir build/ios/iphoneos/Payload
-          cp -R build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/Runner.app
-          cd build/ios/iphoneos/
-          zip -q -r ios_no_sign.ipa Payload
-          cd ../../..
-
-      # 上传IPA至Artifacts
-      - name: Upload IPA to Artifacts
-        uses: actions/upload-artifact@v4
+      # --------------------- 创建 GitHub Release (可选) ---------------------
+      
+      - name: 📝 Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/') # 仅在 tag 触发时创建 Release
         with:
-          name: ios
-          path: |
-            simple_live_app/build/ios/iphoneos/ios_no_sign.ipa
-
-      # 打包MAC
-      - name: Build MacOS
-        run: |
-          cd simple_live_app
-          flutter_distributor package --platform macos --targets dmg,zip --skip-clean
-
-      # 上传MAC至Artifacts
-      - name: Upload MacOS to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: mac
-          path: |
-            simple_live_app/build/dist/*/*.dmg
-            simple_live_app/build/dist/*/*.zip
-      #完成
-      - run: echo "🍏 This job's status is ${{ job.status }}."
-
-  # 打包Linux
-  build-linux:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    steps:
-      # 签出代码
-      - uses: actions/checkout@v4
-        with:
-          ref: dev
-      # 设置Flutter环境
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.38.x"
-          cache: true
-      # 安装依赖
-      - name: Update apt-get
-        run: sudo apt-get update
-      - name: Install Dependencies
-        run: sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libasound2-dev libmpv-dev mpv
-      # 打开Linux Desktop支持
-      - name: Enable Flutter Desktop
-        run: flutter config --enable-linux-desktop
-      # 更新Flutter的packages
-      - name: Restore Packages
-        run: |
-          cd simple_live_app
-          flutter pub get
-      # 设置flutter_distributor环境
-      - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
-      # build Linux ZIP\DMG
-      - name: Build Linux
-        run: |
-          cd simple_live_app
-          flutter_distributor package --platform linux --targets deb,zip --skip-clean
-      # 上传Linux包至Artifacts
-      - name: Upload Linux APP to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux
-          path: |
-            simple_live_app/build/dist/*/*.deb
-            simple_live_app/build/dist/*/*.zip
-
-        #完成
-      - run: echo "🍏 Linux job's status is ${{ job.status }}."
-
-  # 打包Windows
-  build-windows:
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      # 签出代码
-      - uses: actions/checkout@v4
-        with:
-          ref: dev
-      # 设置Flutter环境
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.38.x"
-          cache: true
-      - name: Enable Flutter Desktop
-        run: flutter config --enable-windows-desktop
-      - name: Restore Packages
-        run: |
-          cd simple_live_app
-          flutter pub get
-      # 设置flutter_distributor环境
-      - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
-      # build Windows ZIP\MSIX
-      - name: Build Windows
-        run: |
-          cd simple_live_app
-          flutter_distributor package --platform windows --targets msix,zip --skip-clean
-      # 上传Windows至Artifacts
-      - name: Upload Windows APP to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: |
-            simple_live_app/build/dist/*/*.msix
-            simple_live_app/build/dist/*/*.zip
-        #完成
-      - run: echo "🍏 Windows job's status is ${{ job.status }}."
+          files: "*.ipa"
+          name: LiveContainer App Release ${{ github.ref_name }}
+          draft: false
+          prerelease: true
