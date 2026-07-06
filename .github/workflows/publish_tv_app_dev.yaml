@@ -5,6 +5,9 @@ on:
         tags:
             - "dev_tv_v*"
     workflow_dispatch: # 允许手动触发
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
     build-tv:
         runs-on: macos-latest
